@@ -1,0 +1,52 @@
+# Ablation: N1 + N3 only (MC-Dropout dynamic fusion disabled)
+seed: 42
+device: cuda
+
+data:
+  img_dir: data/processed/images/
+  features_csv: data/processed/features/pe_features_nca.csv
+  train_csv: data/splits/train.csv
+  train_balanced_csv: data/splits/train_balanced.csv
+  val_csv: data/splits/val.csv
+  test_csv: data/splits/test.csv
+  img_size: 224
+  num_workers: 4
+
+model:
+  num_classes: 25
+  img_dim: 256
+  num_dim: 128
+  shared_dim: 128
+  num_heads: 4
+  mc_passes: 10
+  dropout: 0.3
+  use_n1: true
+  use_n2: false
+  use_n3: true
+
+training:
+  epochs: 60
+  batch_size: 64
+  optimizer: adamw
+  lr: 1.0e-4
+  weight_decay: 1.0e-4
+  warmup_epochs: 5
+  grad_clip: 1.0
+
+loss:
+  m_in: -25.0
+  m_out: -7.0
+  alpha: 0.1
+  label_smoothing: 0.1
+
+ood:
+  held_out_families:
+    - Skintrim.N
+    - Yuner.A
+    - Lolyda.AA1
+    - Wintrim.BX
+    - Dialplatform.B
+
+logging:
+  wandb_project: maxfuse-malware
+  save_dir: outputs/checkpoints/
