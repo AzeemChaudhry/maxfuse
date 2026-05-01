@@ -176,10 +176,11 @@ def step_tests():
          TIMEOUTS['tests'])
 
 
-def step_train(config: str = 'configs/maxfuse_full.yaml'):
-    ckpt = ROOT / 'outputs/checkpoints' / Path(config).stem / 'best.pt'
-    _run('train', [sys.executable, 'src/train.py', '--config', config],
-         TIMEOUTS['train'])
+def step_train(config: str = 'configs/maxfuse_full.yaml', resume: bool = False):
+    cmd = [sys.executable, 'src/train.py', '--config', config]
+    if resume:
+        cmd.append('--resume')
+    _run('train', cmd, TIMEOUTS['train'])
 
 
 def step_evaluate(config: str = 'configs/maxfuse_full.yaml'):
@@ -218,6 +219,8 @@ def main():
                         help='Skip the pytest step')
     parser.add_argument('--ablation', action='store_true',
                         help='After main training, also train all ablation configs')
+    parser.add_argument('--resume', action='store_true',
+                        help='Resume training from last saved checkpoint (last.pt)')
     args = parser.parse_args()
 
     start_idx = ALL_STEPS.index(args.from_step)
@@ -226,8 +229,9 @@ def main():
     print()
     print('='*56)
     print('  MAXFUSE — Full Pipeline')
-    print(f"  Starting from: {args.from_step}")
-    print(f"  Ablation: {'yes' if args.ablation else 'no'}")
+    print(f"  Starting from : {args.from_step}")
+    print(f"  Resume        : {'yes' if args.resume else 'no'}")
+    print(f"  Ablation      : {'yes' if args.ablation else 'no'}")
     print('='*56)
 
     step_fns = {
@@ -239,7 +243,7 @@ def main():
         'smote':    step_smote,
         'verify':   step_verify,
         'tests':    step_tests,
-        'train':    lambda: step_train('configs/maxfuse_full.yaml'),
+        'train':    lambda: step_train('configs/maxfuse_full.yaml', resume=args.resume),
         'evaluate': lambda: step_evaluate('configs/maxfuse_full.yaml'),
     }
 
@@ -254,7 +258,7 @@ def main():
         print('  ABLATION STUDY')
         print('='*56)
         for cfg in ABLATION_CONFIGS:
-            step_train(cfg)
+            step_train(cfg, resume=args.resume)
             step_evaluate(cfg)
 
     print()
