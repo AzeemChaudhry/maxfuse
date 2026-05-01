@@ -88,27 +88,49 @@ def evaluate_closed_set(model, loader, device: str, family_names: list = None) -
 
 
 @torch.no_grad()
+def collect_energies_loader(model, loader, device: str) -> np.ndarray:
+    """Collect energy scores from a DataLoader."""
+    energies = []
+    for img, num_feats, _ in tqdm(loader, desc='Collecting energies'):
+        img       = img.to(device)
+        num_feats = num_feats.to(device)
+        v_i, v_n         = model.encode(img, num_feats)
+        v_hat_i, v_hat_n = model.attend(v_i, v_n)
+        z = 0.5 * v_hat_i + 0.5 * v_hat_n
+        logits = model.classifier(z)
+        E = energy_score(logits)
+        energies.append(E.cpu().numpy())
+    return np.concatenate(energies)
+
+
+@torch.no_grad()
+def collect_energies_noise(model, n_samples: int, batch_size: int, device: str) -> np.ndarray:
+    """Collect energy scores for synthetic uniform-noise OOD samples."""
+    energies = []
+    collected = 0
+    while collected < n_samples:
+        bsz = min(batch_size, n_samples - collected)
+        img_ood  = torch.rand(bsz, 1, 224, 224, device=device)
+        feat_ood = torch.rand(bsz, 80,         device=device)
+        v_i, v_n         = model.encode(img_ood, feat_ood)
+        v_hat_i, v_hat_n = model.attend(v_i, v_n)
+        z = 0.5 * v_hat_i + 0.5 * v_hat_n
+        logits = model.classifier(z)
+        E = energy_score(logits)
+        energies.append(E.cpu().numpy())
+        collected += bsz
+    return np.concatenate(energies)
+
+
+@torch.no_grad()
 def evaluate_ood(model, id_loader, ood_loader, device: str) -> dict:
     """
     Evaluate N3 OOD detection (Table 4).
     id_loader: in-distribution test samples
     ood_loader: held-out families (zero-day samples)
     """
-    def collect_energies(loader):
-        energies = []
-        for img, num_feats, _ in tqdm(loader, desc='Collecting energies'):
-            img       = img.to(device)
-            num_feats = num_feats.to(device)
-            v_i, v_n         = model.encode(img, num_feats)
-            v_hat_i, v_hat_n = model.attend(v_i, v_n)
-            z = 0.5 * v_hat_i + 0.5 * v_hat_n
-            logits = model.classifier(z)
-            E = energy_score(logits)
-            energies.append(E.cpu().numpy())
-        return np.concatenate(energies)
-
-    E_id  = collect_energies(id_loader)
-    E_ood = collect_energies(ood_loader)
+    E_id  = collect_energies_loader(model, id_loader, device)
+    E_ood = collect_energies_loader(model, ood_loader, device)
 
     auroc = compute_ood_auroc(E_id, E_ood)
     fpr95 = compute_fpr95(E_id, E_ood)
@@ -158,11 +180,25 @@ def run_evaluation(config_path: str, checkpoint_path: str):
 
     loaders = get_dataloaders(cfg)
 
-    print("=== Closed-Set Evaluation ===")
-    cs_results = evaluate_closed_set(model, loaders['test'], device)
+    # Derive sorted family names from the test split CSV
+    test_df = pd.read_csv(cfg['data']['test_csv'])
+    if 'label_name' in test_df.columns and 'label_id' in test_df.columns:
+        fam_map = test_df.drop_duplicates('label_id').sort_values('label_id')
+        family_names = fam_map['label_name'].tolist()
+    else:
+        family_names = None
 
     out_dir = Path('outputs/results')
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    print("=== Closed-Set Evaluation ===")
+    cs_results = evaluate_closed_set(model, loaders['test'], device, family_names=family_names)
+
+    # Confusion matrix
+    plot_confusion_matrix(
+        cs_results['labels'], cs_results['predictions'], family_names,
+        save_path=str(out_dir / (Path(checkpoint_path).parent.name + '_confusion.png'))
+    )
 
     ood_cfg = cfg.get('ood', {})
     ood_families = ood_cfg.get('held_out_families', [])
@@ -170,7 +206,7 @@ def run_evaluation(config_path: str, checkpoint_path: str):
     if ood_families:
         print("=== OOD Evaluation ===")
         ood_csv = cfg['data'].get('ood_test_csv', None)
-        if ood_csv:
+        if ood_csv and Path(ood_csv).exists():
             import torchvision.transforms as T
             eval_tf = T.Compose([T.Resize((224, 224)), T.ToTensor()])
             ood_ds = MalwareDataset(
@@ -185,6 +221,27 @@ def run_evaluation(config_path: str, checkpoint_path: str):
                 ood_results['energy_id'], ood_results['energy_ood'], tau,
                 save_path=str(out_dir / 'energy_histogram.png')
             )
+        else:
+            # Fall back to synthetic uniform-noise OOD (same distribution used during training)
+            print("  No ood_test_csv found — using synthetic uniform noise as OOD baseline.")
+            n_test = len(loaders['test'].dataset)
+            bsz    = cfg['training']['batch_size']
+            E_id  = collect_energies_loader(model, loaders['test'], device)
+            E_ood = collect_energies_noise(model, n_test, bsz, device)
+
+            auroc = compute_ood_auroc(E_id, E_ood)
+            fpr95 = compute_fpr95(E_id, E_ood)
+            print(f"\n{'='*50}")
+            print(f"  OOD AUROC (vs noise): {auroc:.4f}")
+            print(f"  FPR@95   (vs noise): {fpr95:.4f}")
+            print(f"{'='*50}\n")
+            tau = model.tau.item()
+            plot_energy_histogram(
+                E_id, E_ood, tau,
+                save_path=str(out_dir / 'energy_histogram_noise.png')
+            )
+            ood_results = {'ood_auroc': auroc, 'fpr95': fpr95,
+                           'energy_id': E_id, 'energy_ood': E_ood}
 
     results_file = out_dir / (Path(checkpoint_path).parent.name + '.json')
     summary = {

@@ -98,7 +98,7 @@ def run_nca_pipeline(
     train_mask = feat_df['filename'].isin(train_files).values
     X_train, y_train = X[train_mask], y[train_mask]
 
-    print(f"Fitting NCA on {X_train.shape[0]} train samples, {X.shape[1]} -> {n_components} dims")
+    print(f"Fitting NCA on {X_train.shape[0]} train samples, {X_train.shape[1]} -> {n_components} dims")
     fit_nca(X_train, y_train, n_components=n_components, save_path=model_path)
 
     X_transformed = transform_nca(X, model_path=model_path)

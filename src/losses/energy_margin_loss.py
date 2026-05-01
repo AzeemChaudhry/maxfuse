@@ -18,6 +18,10 @@ Reference: Liu et al., "Energy-based Out-of-distribution Detection", NeurIPS 202
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from models.energy_ood import energy_score
 
 
 class EnergyMarginLoss(nn.Module):
@@ -70,9 +74,9 @@ class EnergyMarginLoss(nn.Module):
         # -- Cross-entropy on in-distribution samples --
         l_ce = self.ce(logits_id, labels_id)
 
-        # -- Energy scores --
-        E_in  = -torch.logsumexp(logits_id,  dim=-1)
-        E_out = -torch.logsumexp(logits_ood, dim=-1)
+        # -- Energy scores (consistent with inference via energy_score()) --
+        E_in  = energy_score(logits_id)
+        E_out = energy_score(logits_ood)
 
         # -- Margin hinge terms (Eq. 17) --
         # Push E_in  below m_in  (in-dist should have low / negative energy)
