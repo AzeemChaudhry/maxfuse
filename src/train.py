@@ -18,6 +18,7 @@ import torch
 os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
 
 import torch.optim as optim
+from torch.cuda.amp import GradScaler, autocast
 from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 from tqdm import tqdm
 from pathlib import Path
@@ -61,25 +62,29 @@ def make_ood_batch(batch_size: int, device: str) -> tuple:
     return img_ood, feat_ood
 
 
-def train_epoch(model, loader, optimizer, criterion, device, ood_ratio=0.5) -> dict:
+def train_epoch(model, loader, optimizer, criterion, scaler, device, ood_ratio=0.5) -> dict:
     model.train()
     total_loss = correct = total = 0
 
     for img, num_feats, labels in tqdm(loader, desc='  train', leave=False):
-        img       = img.to(device)
-        num_feats = num_feats.to(device)
-        labels    = labels.to(device)
+        img       = img.to(device, non_blocking=True)
+        num_feats = num_feats.to(device, non_blocking=True)
+        labels    = labels.to(device, non_blocking=True)
 
         ood_size = max(1, int(len(img) * ood_ratio))
         img_ood, feat_ood = make_ood_batch(ood_size, device)
 
-        optimizer.zero_grad()
-        logits_id  = model(img, num_feats)
-        logits_ood = model(img_ood, feat_ood)
-        loss, loss_dict = criterion(logits_id, labels, logits_ood)
-        loss.backward()
+        optimizer.zero_grad(set_to_none=True)
+        with autocast():
+            logits_id  = model(img, num_feats)
+            logits_ood = model(img_ood, feat_ood)
+            loss, loss_dict = criterion(logits_id, labels, logits_ood)
+
+        scaler.scale(loss).backward()
+        scaler.unscale_(optimizer)
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-        optimizer.step()
+        scaler.step(optimizer)
+        scaler.update()
 
         total_loss += loss_dict['loss_total'] * len(labels)
         correct    += (logits_id.argmax(dim=-1) == labels).sum().item()
@@ -94,15 +99,16 @@ def validate(model, loader, criterion, device) -> dict:
     total_loss = correct = total = 0
 
     for img, num_feats, labels in tqdm(loader, desc='  val  ', leave=False):
-        img       = img.to(device)
-        num_feats = num_feats.to(device)
-        labels    = labels.to(device)
+        img       = img.to(device, non_blocking=True)
+        num_feats = num_feats.to(device, non_blocking=True)
+        labels    = labels.to(device, non_blocking=True)
 
-        logits_id  = model(img, num_feats)
-        ood_size   = max(1, len(img) // 4)
-        img_ood, feat_ood = make_ood_batch(ood_size, device)
-        logits_ood = model(img_ood, feat_ood)
-        loss, loss_dict = criterion(logits_id, labels, logits_ood)
+        with autocast():
+            logits_id  = model(img, num_feats)
+            ood_size   = max(1, len(img) // 4)
+            img_ood, feat_ood = make_ood_batch(ood_size, device)
+            logits_ood = model(img_ood, feat_ood)
+            loss, loss_dict = criterion(logits_id, labels, logits_ood)
 
         total_loss += loss_dict['loss_total'] * len(labels)
         correct    += (logits_id.argmax(dim=-1) == labels).sum().item()
@@ -136,6 +142,8 @@ def run_training(config_path: str, resume: bool = False):
 
     set_seed(cfg.get('seed', 42))
     device = cfg.get('device', 'cuda' if torch.cuda.is_available() else 'cpu')
+    if device == 'cuda':
+        torch.backends.cudnn.benchmark = True
     print(f"Device: {device}")
 
     t_cfg    = cfg['training']
@@ -153,6 +161,7 @@ def run_training(config_path: str, resume: bool = False):
         m_out=cfg['loss']['m_out'],
         alpha=cfg['loss']['alpha']
     )
+    scaler = GradScaler(enabled=(device == 'cuda'))
 
     # ── Resume state ─────────────────────────────────────────────────────────
     start_epoch   = 1
@@ -223,7 +232,7 @@ def run_training(config_path: str, resume: bool = False):
             )
             phase2_started = True
 
-        train_metrics = train_epoch(model, loaders['train'], optimizer, criterion, device)
+        train_metrics = train_epoch(model, loaders['train'], optimizer, criterion, scaler, device)
         val_metrics   = validate(model, loaders['val'], criterion, device)
         scheduler.step()
 
