@@ -38,7 +38,7 @@ class MalwareDataset(Dataset):
         features_csv: str,
         transform=None
     ):
-        self.split_df  = pd.read_csv(split_csv)
+        self.split_df = pd.read_csv(split_csv)
         self.image_dir = Path(image_dir)
         self.transform = transform
 
@@ -55,29 +55,6 @@ class MalwareDataset(Dataset):
             self.feat_lookup = feat_df.set_index('filename')[feat_cols]
             self.feat_cols = feat_cols
 
-        # Pre-load all unique images into RAM as uint8 numpy arrays (~330 MB for
-        # Malimg). SMOTE creates 51k rows from only 6.5k unique files, so every
-        # __getitem__ call would hit disk without this cache.
-        self._img_cache: dict = {}
-        unique_files = self.split_df[['filename', 'label_name']].drop_duplicates('filename')
-        print(f"Caching {len(unique_files)} unique images into RAM...", flush=True)
-        for _, row in unique_files.iterrows():
-            self._img_cache[row['filename']] = self._load_img_bytes(
-                row['filename'], row['label_name']
-            )
-        print("Image cache ready.", flush=True)
-
-    def _load_img_bytes(self, filename: str, label_name: str) -> np.ndarray:
-        """Load a single image as uint8 (H, W) numpy array."""
-        img_path = self.image_dir / label_name / Path(filename).name
-        if not img_path.exists():
-            for ext in ('.png', '.jpg', '.jpeg', '.bmp', '.pgm'):
-                candidate = self.image_dir / label_name / (Path(filename).stem + ext)
-                if candidate.exists():
-                    img_path = candidate
-                    break
-        return np.array(Image.open(img_path).convert('L'), dtype=np.uint8)
-
     def __len__(self):
         return len(self.split_df)
 
@@ -87,8 +64,17 @@ class MalwareDataset(Dataset):
         label_name = row['label_name']
         label_id   = int(row['label_id'])
 
-        # -- Image (served from RAM cache) --
-        img = Image.fromarray(self._img_cache[filename], mode='L')
+        # -- Image --
+        # filename is 'FamilyName/basename.ext'; search for it regardless of extension
+        img_path = self.image_dir / label_name / Path(filename).name
+        if not img_path.exists():
+            # Extension may differ from what was stored in the CSV — find the file
+            for ext in ('.png', '.jpg', '.jpeg', '.bmp', '.pgm'):
+                candidate = self.image_dir / label_name / (Path(filename).stem + ext)
+                if candidate.exists():
+                    img_path = candidate
+                    break
+        img = Image.open(img_path).convert('L')
 
         if self.transform:
             img = self.transform(img)
