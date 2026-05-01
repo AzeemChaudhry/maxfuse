@@ -9,7 +9,7 @@ data:
   val_csv: data/splits/val.csv
   test_csv: data/splits/test.csv
   img_size: 224
-  num_workers: 4
+  num_workers: 2
 
 model:
   num_classes: 25
@@ -25,7 +25,7 @@ model:
 
 training:
   epochs: 60
-  batch_size: 64
+  batch_size: 32
   optimizer: adamw
   lr: 1.0e-4
   weight_decay: 1.0e-4

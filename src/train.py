@@ -12,6 +12,9 @@ import sys
 import yaml
 import wandb
 import torch
+
+# Reduce CUDA memory fragmentation (safe on all PyTorch 2.x builds)
+os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
 import torch.optim as optim
 from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 from tqdm import tqdm
@@ -139,7 +142,11 @@ def run_training(config_path: str):
     wandb.init(
         project=cfg['logging']['wandb_project'],
         config=cfg,
-        name=Path(config_path).stem
+        name=Path(config_path).stem,
+        settings=wandb.Settings(
+            _disable_stats=True,   # no system metrics (saves disk)
+            _disable_meta=True,    # no git/conda metadata
+        )
     )
 
     loaders = get_dataloaders(cfg)
@@ -189,6 +196,7 @@ def run_training(config_path: str):
         # Phase 2 switch at epoch 21
         if epoch == 21 and not phase2_started:
             print("  => Phase 2: unfreezing EfficientNet backbone")
+            torch.cuda.empty_cache()
             for param in model.image_encoder.backbone.parameters():
                 param.requires_grad = True
             optimizer = optim.AdamW([
