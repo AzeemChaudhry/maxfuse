@@ -20,8 +20,7 @@ def balance_train(
     X_train: np.ndarray,
     y_train: np.ndarray,
     k_neighbors: int = 5,
-    random_state: int = 42,
-    max_samples_per_class: int = 600
+    random_state: int = 42
 ) -> tuple:
     """
     Apply SMOTE oversampling to balance the training set.
@@ -31,34 +30,14 @@ def balance_train(
         y_train: Labels (N,)
         k_neighbors: k for SMOTE nearest neighbours
         random_state: Reproducibility seed
-        max_samples_per_class: Cap on samples per class after SMOTE.
-            Default 600 gives ~15k total vs 51k with full balancing.
-            Keeps training fast while still correcting severe imbalance.
 
     Returns:
         (X_resampled, y_resampled) — balanced versions
     """
-    counts = Counter(y_train)
-    # Target: upsample each minority class to min(max_samples_per_class, majority_count)
-    # but never downsample classes already above the target.
-    majority_count = max(counts.values())
-    target = min(max_samples_per_class, majority_count)
-    sampling_strategy = {
-        cls: max(cnt, target)   # only upsample, never downsample
-        for cls, cnt in counts.items()
-        if cnt < target         # skip classes already at or above target
-    }
-
-    print(f"Before SMOTE: {dict(sorted(counts.items()))}")
-    if not sampling_strategy:
-        print("All classes already at or above target — no SMOTE needed.")
-        return X_train.astype(np.float32), y_train
-
-    sm = SMOTE(k_neighbors=min(k_neighbors, min(counts.values()) - 1),
-               sampling_strategy=sampling_strategy,
-               random_state=random_state)
+    print(f"Before SMOTE: {Counter(y_train)}")
+    sm = SMOTE(k_neighbors=k_neighbors, random_state=random_state)
     X_res, y_res = sm.fit_resample(X_train, y_train)
-    print(f"After SMOTE ({target} target/class): {dict(sorted(Counter(y_res).items()))}")
+    print(f"After SMOTE:  {Counter(y_res)}")
     return X_res.astype(np.float32), y_res
 
 
@@ -67,8 +46,7 @@ def run_smote_pipeline(
     train_csv: str,
     labels_csv: str,
     out_balanced_csv: str,
-    k_neighbors: int = 5,
-    max_samples_per_class: int = 600
+    k_neighbors: int = 5
 ):
     """
     Load NCA-reduced features, apply SMOTE on train split, save balanced CSV.
@@ -91,9 +69,7 @@ def run_smote_pipeline(
 
     X_train = train_df[feat_cols].values.astype(np.float32)
 
-    X_res, y_res = balance_train(X_train, label_ids_orig,
-                                  k_neighbors=k_neighbors,
-                                  max_samples_per_class=max_samples_per_class)
+    X_res, y_res = balance_train(X_train, label_ids_orig, k_neighbors=k_neighbors)
 
     n_orig = len(X_train)
     n_syn = len(X_res) - n_orig
@@ -130,7 +106,5 @@ if __name__ == '__main__':
     parser.add_argument('--train_csv', required=True)
     parser.add_argument('--labels_csv', required=True)
     parser.add_argument('--out_csv', required=True)
-    parser.add_argument('--max_per_class', type=int, default=600)
     args = parser.parse_args()
-    run_smote_pipeline(args.features_csv, args.train_csv, args.labels_csv,
-                       args.out_csv, max_samples_per_class=args.max_per_class)
+    run_smote_pipeline(args.features_csv, args.train_csv, args.labels_csv, args.out_csv)

@@ -150,11 +150,10 @@ def step_smote():
         return
     _run('smote',
          [sys.executable, 'src/data/smote_balancer.py',
-          '--features_csv',  'data/processed/features/pe_features_nca.csv',
-          '--train_csv',     'data/splits/train.csv',
-          '--labels_csv',    'data/processed/features/labels.csv',
-          '--out_csv',       'data/splits/train_balanced.csv',
-          '--max_per_class', '600'],
+          '--features_csv', 'data/processed/features/pe_features_nca.csv',
+          '--train_csv',    'data/splits/train.csv',
+          '--labels_csv',   'data/processed/features/labels.csv',
+          '--out_csv',      'data/splits/train_balanced.csv'],
          TIMEOUTS['smote'])
 
 
