@@ -144,8 +144,7 @@ def run_training(config_path: str):
         config=cfg,
         name=Path(config_path).stem,
         settings=wandb.Settings(
-            _disable_stats=True,   # no system metrics (saves disk)
-            _disable_meta=True,    # no git/conda metadata
+            _disable_stats=True,   # no system metrics sampled every 2s (saves disk)
         )
     )
 
