@@ -182,13 +182,18 @@ def get_dataloaders(config: dict) -> dict:
                                 data_cfg['features_csv'], transform=eval_transform),
     }
 
+    # num_workers=0 is fastest on Windows (avoids process-spawn overhead per epoch)
+    num_workers = data_cfg.get('num_workers', 0)
+    pin_memory  = (num_workers > 0)   # pin_memory only helps with background workers
+
     loaders = {
         split: DataLoader(
             ds,
             batch_size=config['training']['batch_size'],
             shuffle=(split == 'train'),
-            num_workers=data_cfg.get('num_workers', 4),
-            pin_memory=True,
+            num_workers=num_workers,
+            pin_memory=pin_memory,
+            persistent_workers=(num_workers > 0),
             drop_last=(split == 'train')
         )
         for split, ds in datasets.items()
