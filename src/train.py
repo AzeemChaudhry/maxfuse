@@ -209,7 +209,7 @@ def run_training(config_path: str, resume: bool = False):
             print(f"  [WARN] Could not restore optimizer state ({e}). Using fresh optimizer.")
 
     # ── WandB ─────────────────────────────────────────────────────────────────
-    wandb.init(
+    wandb_kwargs = dict(
         project=cfg['logging']['wandb_project'],
         config=cfg,
         name=Path(config_path).stem,
@@ -218,6 +218,10 @@ def run_training(config_path: str, resume: bool = False):
             _disable_stats=True,
         )
     )
+    if os.environ.get('KAGGLE_URL_BASE') or os.environ.get('KAGGLE_KERNEL_RUN_TYPE'):
+        wandb_kwargs['mode'] = 'disabled'
+
+    wandb.init(**wandb_kwargs)
 
     # ── Training loop ─────────────────────────────────────────────────────────
     for epoch in range(start_epoch, epochs + 1):

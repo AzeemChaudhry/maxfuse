@@ -20,11 +20,37 @@ import sys
 import os
 import argparse
 import time
+import yaml
 from pathlib import Path
 
 # ── Resolve project root regardless of where the script is invoked from ──────
 ROOT = Path(__file__).resolve().parent
 os.chdir(ROOT)
+
+
+def _is_kaggle_env() -> bool:
+    return bool(os.environ.get('KAGGLE_URL_BASE') or os.environ.get('KAGGLE_KERNEL_RUN_TYPE'))
+
+
+def _prepare_runtime_config(config: str, kaggle_mode: bool) -> str:
+    if not kaggle_mode:
+        return config
+
+    source_path = ROOT / config
+    with open(source_path) as f:
+        cfg = yaml.safe_load(f)
+
+    cfg.setdefault('data', {})
+    cfg.setdefault('training', {})
+    cfg['data']['num_workers'] = 4
+
+    runtime_dir = ROOT / 'outputs' / 'kaggle_configs'
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    runtime_path = runtime_dir / Path(config).name
+    with open(runtime_path, 'w') as f:
+        yaml.safe_dump(cfg, f, sort_keys=False)
+
+    return str(runtime_path.relative_to(ROOT))
 
 # ── Timeouts (seconds) ────────────────────────────────────────────────────────
 TIMEOUTS = {
@@ -224,7 +250,12 @@ def main():
                         help='Train and evaluate all 5 models: base, ablation_no_n1/n2/n3, and maxfuse_full')
     parser.add_argument('--resume', action='store_true',
                         help='Resume training from last saved checkpoint (last.pt)')
+    parser.add_argument('--kaggle', action='store_true',
+                        help='Use Kaggle/P100 runtime settings (auto-detected on Kaggle)')
     args = parser.parse_args()
+
+    kaggle_mode = args.kaggle or _is_kaggle_env()
+    runtime_suffix = 'p100' if kaggle_mode else ''
 
     start_idx = ALL_STEPS.index(args.from_step)
     steps_to_run = ALL_STEPS[start_idx:]
@@ -235,7 +266,11 @@ def main():
     print(f"  Starting from : {args.from_step}")
     print(f"  Resume        : {'yes' if args.resume else 'no'}")
     print(f"  Ablation      : {'yes' if args.ablation else 'no'}")
+    print(f"  Kaggle/P100   : {'yes' if kaggle_mode else 'no'}")
     print('='*56)
+
+    def runtime_config(config: str) -> str:
+        return _prepare_runtime_config(config, kaggle_mode)
 
     step_fns = {
         'install':  step_install,
@@ -246,8 +281,8 @@ def main():
         'smote':    step_smote,
         'verify':   step_verify,
         'tests':    step_tests,
-        'train':    lambda: step_train('configs/maxfuse_full.yaml', resume=args.resume),
-        'evaluate': lambda: step_evaluate('configs/maxfuse_full.yaml', output_suffix='maxfuse_full'),
+        'train':    lambda: step_train(runtime_config('configs/maxfuse_full.yaml'), resume=args.resume),
+        'evaluate': lambda: step_evaluate(runtime_config('configs/maxfuse_full.yaml'), output_suffix=runtime_suffix or 'maxfuse_full'),
     }
 
     for step in steps_to_run:
@@ -273,8 +308,8 @@ def main():
         print('='*56)
         for cfg in ALL_CONFIGS:
             config_name = Path(cfg).stem
-            step_train(cfg, resume=args.resume)
-            step_evaluate(cfg, output_suffix=config_name)
+            step_train(runtime_config(cfg), resume=args.resume)
+            step_evaluate(runtime_config(cfg), output_suffix=(runtime_suffix or config_name))
 
     print()
     print('='*56)
