@@ -171,7 +171,7 @@ def plot_energy_histogram(E_id, E_ood, tau, save_path):
     print(f"Energy histogram saved to {save_path}")
 
 
-def run_evaluation(config_path: str, checkpoint_path: str):
+def run_evaluation(config_path: str, checkpoint_path: str, output_suffix: str = ''):
     with open(config_path) as f:
         cfg = yaml.safe_load(f)
 
@@ -190,6 +190,7 @@ def run_evaluation(config_path: str, checkpoint_path: str):
 
     out_dir = Path('outputs/results')
     out_dir.mkdir(parents=True, exist_ok=True)
+    suffix_str = f"_{output_suffix}" if output_suffix else ""
 
     print("=== Closed-Set Evaluation ===")
     cs_results = evaluate_closed_set(model, loaders['test'], device, family_names=family_names)
@@ -197,7 +198,7 @@ def run_evaluation(config_path: str, checkpoint_path: str):
     # Confusion matrix
     plot_confusion_matrix(
         cs_results['labels'], cs_results['predictions'], family_names,
-        save_path=str(out_dir / (Path(checkpoint_path).parent.name + '_confusion.png'))
+        save_path=str(out_dir / (Path(checkpoint_path).parent.name + suffix_str + '_confusion.png'))
     )
 
     ood_cfg = cfg.get('ood', {})
@@ -243,7 +244,7 @@ def run_evaluation(config_path: str, checkpoint_path: str):
             ood_results = {'ood_auroc': auroc, 'fpr95': fpr95,
                            'energy_id': E_id, 'energy_ood': E_ood}
 
-    results_file = out_dir / (Path(checkpoint_path).parent.name + '.json')
+    results_file = out_dir / (Path(checkpoint_path).parent.name + suffix_str + '.json')
     summary = {
         'accuracy':  cs_results['accuracy'],
         'macro_f1':  cs_results['macro_f1'],
@@ -263,5 +264,6 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--config',     required=True)
     parser.add_argument('--checkpoint', required=True)
+    parser.add_argument('--output_suffix', default='', help='Optional suffix for output filenames (e.g., run1, ablation_no_n1)')
     args = parser.parse_args()
-    run_evaluation(args.config, args.checkpoint)
+    run_evaluation(args.config, args.checkpoint, args.output_suffix)

@@ -183,26 +183,30 @@ def step_train(config: str = 'configs/maxfuse_full.yaml', resume: bool = False):
     _run('train', cmd, TIMEOUTS['train'])
 
 
-def step_evaluate(config: str = 'configs/maxfuse_full.yaml'):
+def step_evaluate(config: str = 'configs/maxfuse_full.yaml', output_suffix: str = ''):
     ckpt = f"outputs/checkpoints/{Path(config).stem}/best.pt"
     if not (ROOT / ckpt).exists():
         print(f"\n[WARN] evaluate skipped — checkpoint not found: {ckpt}")
         return
-    _run('evaluate',
-         [sys.executable, 'src/evaluate.py', '--config', config, '--checkpoint', ckpt],
-         TIMEOUTS['evaluate'])
+    cmd = [sys.executable, 'src/evaluate.py', '--config', config, '--checkpoint', ckpt]
+    if output_suffix:
+        cmd.extend(['--output_suffix', output_suffix])
+    _run('evaluate', cmd, TIMEOUTS['evaluate'])
 
 
-# ── Step ordering ─────────────────────────────────────────────────────────────
+# ── Step ordering 
+────────────────────────────────────────────────────────────────────────────────
 
 ALL_STEPS = ['install', 'download', 'features', 'splits', 'nca', 'smote',
              'verify', 'tests', 'train', 'evaluate']
 
-ABLATION_CONFIGS = [
+# All configs: base, 3 ablations (no-N1, no-N2, no-N3), and full model
+ALL_CONFIGS = [
     'configs/base.yaml',
     'configs/ablation_no_n1.yaml',
     'configs/ablation_no_n2.yaml',
     'configs/ablation_no_n3.yaml',
+    'configs/maxfuse_full.yaml',
 ]
 
 
@@ -218,7 +222,7 @@ def main():
     parser.add_argument('--skip-tests', action='store_true',
                         help='Skip the pytest step')
     parser.add_argument('--ablation', action='store_true',
-                        help='After main training, also train all ablation configs')
+                        help='Train and evaluate all 5 models: base, ablation_no_n1/n2/n3, and maxfuse_full')
     parser.add_argument('--resume', action='store_true',
                         help='Resume training from last saved checkpoint (last.pt)')
     args = parser.parse_args()
@@ -244,26 +248,46 @@ def main():
         'verify':   step_verify,
         'tests':    step_tests,
         'train':    lambda: step_train('configs/maxfuse_full.yaml', resume=args.resume),
-        'evaluate': lambda: step_evaluate('configs/maxfuse_full.yaml'),
+        'evaluate': lambda: step_evaluate('configs/maxfuse_full.yaml', output_suffix='maxfuse_full'),
     }
 
     for step in steps_to_run:
         if step == 'tests' and args.skip_tests:
             print(f"\n[SKIP] tests — --skip-tests flag set")
             continue
+        if step == 'train' and args.ablation:
+            print(f"\n[SKIP] train — will run all 5 configs via --ablation")
+            continue
+        if step == 'evaluate' and args.ablation:
+            print(f"\n[SKIP] evaluate — will run all 5 configs via --ablation")
+            continue
         step_fns[step]()
 
     if args.ablation:
         print('\n' + '='*56)
-        print('  ABLATION STUDY')
+        print('  COMPREHENSIVE ABLATION STUDY — All 5 Models')
+        print('  • base.yaml')
+        print('  • ablation_no_n1.yaml   (N1 disabled)')
+        print('  • ablation_no_n2.yaml   (N2 disabled)')
+        print('  • ablation_no_n3.yaml   (N3 disabled)')
+        print('  • maxfuse_full.yaml     (all novelties enabled)')
         print('='*56)
-        for cfg in ABLATION_CONFIGS:
+        for cfg in ALL_CONFIGS:
+            config_name = Path(cfg).stem
             step_train(cfg, resume=args.resume)
-            step_evaluate(cfg)
+            step_evaluate(cfg, output_suffix=config_name)
 
     print()
     print('='*56)
-    print('  Pipeline complete. Results in outputs/results/')
+    if args.ablation:
+        print('  Ablation study complete!')
+        print('  Trained 5 models with unique result files:')
+        for cfg in ALL_CONFIGS:
+            name = Path(cfg).stem
+            print(f'    • {name}_{{json,confusion.png}}')
+    else:
+        print('  Pipeline complete.')
+    print(f'  Results in outputs/results/')
     print('='*56)
 
 
