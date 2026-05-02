@@ -18,7 +18,7 @@ import torch
 os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
 
 import torch.optim as optim
-from torch.cuda.amp import GradScaler, autocast
+from torch.amp import GradScaler, autocast
 from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 from tqdm import tqdm
 from pathlib import Path
@@ -75,7 +75,7 @@ def train_epoch(model, loader, optimizer, criterion, scaler, device, ood_ratio=0
         img_ood, feat_ood = make_ood_batch(ood_size, device)
 
         optimizer.zero_grad(set_to_none=True)
-        with autocast():
+        with autocast(device_type='cuda' if device == 'cuda' else 'cpu'):
             logits_id  = model(img, num_feats)
             logits_ood = model(img_ood, feat_ood)
             loss, loss_dict = criterion(logits_id, labels, logits_ood)
@@ -103,7 +103,7 @@ def validate(model, loader, criterion, device) -> dict:
         num_feats = num_feats.to(device, non_blocking=True)
         labels    = labels.to(device, non_blocking=True)
 
-        with autocast():
+        with autocast(device_type='cuda' if device == 'cuda' else 'cpu'):
             logits_id  = model(img, num_feats)
             ood_size   = max(1, len(img) // 4)
             img_ood, feat_ood = make_ood_batch(ood_size, device)
@@ -142,6 +142,24 @@ def run_training(config_path: str, resume: bool = False):
 
     set_seed(cfg.get('seed', 42))
     device = cfg.get('device', 'cuda' if torch.cuda.is_available() else 'cpu')
+    
+    # Test CUDA compatibility (especially for P100 on Kaggle)
+    if device == 'cuda':
+        try:
+            torch.zeros(1, device=device)
+            print(f"✓ CUDA device ready: {torch.cuda.get_device_name(0)}")
+        except RuntimeError as e:
+            if 'no kernel image' in str(e) or 'not compatible' in str(e):
+                print("[WARN] GPU CUDA incompatibility detected (likely P100 on Kaggle).")
+                print("       PyTorch was built for sm_70+ but P100 is sm_60.")
+                print("\n[FIX] On Kaggle, run this in a cell BEFORE training:")
+                print("       !pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118")
+                print("\n[ALT] Or fall back to CPU (slower but will work).")
+                print("       Falling back to CPU now...")
+                device = 'cpu'
+            else:
+                raise
+    
     if device == 'cuda':
         torch.backends.cudnn.benchmark = True
     print(f"Device: {device}")

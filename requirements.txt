@@ -1,3 +1,8 @@
+# PyTorch with CUDA support
+# For Kaggle P100 GPU, run in notebook before importing:
+#   !pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+# This installs PyTorch with CUDA 11.8 (compatible with P100 sm_60)
+# If P100 compatibility fails, fall back to CPU
 torch>=2.1.0
 torchvision>=0.16.0
 timm>=0.9.12
