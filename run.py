@@ -194,8 +194,7 @@ def step_evaluate(config: str = 'configs/maxfuse_full.yaml', output_suffix: str 
     _run('evaluate', cmd, TIMEOUTS['evaluate'])
 
 
-# ── Step ordering 
-────────────────────────────────────────────────────────────────────────────────
+# Step ordering
 
 ALL_STEPS = ['install', 'download', 'features', 'splits', 'nca', 'smote',
              'verify', 'tests', 'train', 'evaluate']
