@@ -6,10 +6,28 @@ Loads (image, numeric_features, label) triples.
 import numpy as np
 import pandas as pd
 import torch
+import os
 from torch.utils.data import Dataset, DataLoader
 from PIL import Image
 from pathlib import Path
 from sklearn.model_selection import train_test_split
+
+
+def _subsample_balanced_frame(df: pd.DataFrame, n_per_class: int, seed: int) -> pd.DataFrame:
+    """Return up to n_per_class samples per label_id, preserving all columns."""
+    if n_per_class is None or n_per_class <= 0:
+        return df
+
+    group_col = 'label_id' if 'label_id' in df.columns else 'label_name'
+    if group_col not in df.columns:
+        raise KeyError("Expected either 'label_id' or 'label_name' in split CSV for balanced subsampling")
+
+    sampled = (
+        df.groupby(group_col, group_keys=False)
+          .apply(lambda group: group.sample(n=min(len(group), n_per_class), random_state=seed))
+          .reset_index(drop=True)
+    )
+    return sampled.sample(frac=1.0, random_state=seed).reset_index(drop=True)
 
 
 class MalwareDataset(Dataset):
@@ -36,9 +54,12 @@ class MalwareDataset(Dataset):
         split_csv: str,
         image_dir: str,
         features_csv: str,
+        subset_per_class: int = None,
+        subset_seed: int = 42,
         transform=None
     ):
         self.split_df = pd.read_csv(split_csv)
+        self.split_df = _subsample_balanced_frame(self.split_df, subset_per_class, subset_seed)
         self.image_dir = Path(image_dir)
         self.transform = transform
 
@@ -62,7 +83,13 @@ class MalwareDataset(Dataset):
         row = self.split_df.iloc[idx]
         filename   = row['filename']
         label_name = row['label_name']
-        label_id   = int(row['label_id'])
+        if 'label_id' in self.split_df.columns:
+            label_id = int(row['label_id'])
+        else:
+            if not hasattr(self, '_label_map'):
+                unique_labels = sorted(self.split_df['label_name'].dropna().unique().tolist())
+                self._label_map = {name: i for i, name in enumerate(unique_labels)}
+            label_id = int(self._label_map[label_name])
 
         # -- Image --
         # filename is 'FamilyName/basename.ext'; search for it regardless of extension
@@ -172,18 +199,33 @@ def get_dataloaders(config: dict) -> dict:
 
     data_cfg = config['data']
     train_split = data_cfg.get('train_balanced_csv', data_cfg['train_csv'])
+    subset_per_class = data_cfg.get('subsample_per_class', None)
+    subset_seed = int(config.get('seed', 42))
 
     datasets = {
         'train': MalwareDataset(train_split, data_cfg['img_dir'],
-                                data_cfg['features_csv'], transform=train_transform),
+                                data_cfg['features_csv'],
+                                subset_per_class=subset_per_class,
+                                subset_seed=subset_seed,
+                                transform=train_transform),
         'val':   MalwareDataset(data_cfg['val_csv'], data_cfg['img_dir'],
-                                data_cfg['features_csv'], transform=eval_transform),
+                                data_cfg['features_csv'],
+                                subset_per_class=subset_per_class,
+                                subset_seed=subset_seed + 1,
+                                transform=eval_transform),
         'test':  MalwareDataset(data_cfg['test_csv'], data_cfg['img_dir'],
-                                data_cfg['features_csv'], transform=eval_transform),
+                                data_cfg['features_csv'],
+                                subset_per_class=subset_per_class,
+                                subset_seed=subset_seed + 2,
+                                transform=eval_transform),
     }
 
-    # num_workers=0 is fastest on Windows (avoids process-spawn overhead per epoch)
-    num_workers = data_cfg.get('num_workers', 0)
+    # Windows multiprocessing overhead can dominate dataloading; force worker=0 there.
+    num_workers = int(data_cfg.get('num_workers', 0))
+    if os.name == 'nt' and num_workers > 0:
+        print(f"[DataLoader] Windows detected: overriding num_workers {num_workers} -> 0")
+        num_workers = 0
+
     pin_memory  = (num_workers > 0)   # pin_memory only helps with background workers
 
     loaders = {

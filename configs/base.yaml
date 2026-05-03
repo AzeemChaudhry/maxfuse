@@ -19,9 +19,9 @@ model:
   num_heads: 4
   mc_passes: 10
   dropout: 0.3
-  use_n1: true
-  use_n2: true
-  use_n3: true
+  use_n1: false
+  use_n2: false
+  use_n3: false
 
 training:
   epochs: 60

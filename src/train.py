@@ -65,17 +65,18 @@ def make_ood_batch(batch_size: int, device: str) -> tuple:
 def train_epoch(model, loader, optimizer, criterion, scaler, device, ood_ratio=0.5) -> dict:
     model.train()
     total_loss = correct = total = 0
+    use_cuda = (device == 'cuda')
 
     for img, num_feats, labels in tqdm(loader, desc='  train', leave=False):
-        img       = img.to(device, non_blocking=True)
-        num_feats = num_feats.to(device, non_blocking=True)
-        labels    = labels.to(device, non_blocking=True)
+        img       = img.to(device, non_blocking=use_cuda)
+        num_feats = num_feats.to(device, non_blocking=use_cuda)
+        labels    = labels.to(device, non_blocking=use_cuda)
 
         ood_size = max(1, int(len(img) * ood_ratio))
         img_ood, feat_ood = make_ood_batch(ood_size, device)
 
         optimizer.zero_grad(set_to_none=True)
-        with autocast(device_type='cuda' if device == 'cuda' else 'cpu'):
+        with autocast(device_type='cuda' if use_cuda else 'cpu', enabled=use_cuda):
             logits_id  = model(img, num_feats)
             logits_ood = model(img_ood, feat_ood)
             loss, loss_dict = criterion(logits_id, labels, logits_ood)
@@ -97,13 +98,14 @@ def train_epoch(model, loader, optimizer, criterion, scaler, device, ood_ratio=0
 def validate(model, loader, criterion, device) -> dict:
     model.eval()
     total_loss = correct = total = 0
+    use_cuda = (device == 'cuda')
 
     for img, num_feats, labels in tqdm(loader, desc='  val  ', leave=False):
-        img       = img.to(device, non_blocking=True)
-        num_feats = num_feats.to(device, non_blocking=True)
-        labels    = labels.to(device, non_blocking=True)
+        img       = img.to(device, non_blocking=use_cuda)
+        num_feats = num_feats.to(device, non_blocking=use_cuda)
+        labels    = labels.to(device, non_blocking=use_cuda)
 
-        with autocast(device_type='cuda' if device == 'cuda' else 'cpu'):
+        with autocast(device_type='cuda' if use_cuda else 'cpu', enabled=use_cuda):
             logits_id  = model(img, num_feats)
             ood_size   = max(1, len(img) // 4)
             img_ood, feat_ood = make_ood_batch(ood_size, device)
@@ -162,6 +164,7 @@ def run_training(config_path: str, resume: bool = False):
     
     if device == 'cuda':
         torch.backends.cudnn.benchmark = True
+        torch.set_float32_matmul_precision('high')
     print(f"Device: {device}")
 
     t_cfg    = cfg['training']
@@ -179,7 +182,10 @@ def run_training(config_path: str, resume: bool = False):
         m_out=cfg['loss']['m_out'],
         alpha=cfg['loss']['alpha']
     )
-    scaler = GradScaler(enabled=(device == 'cuda'))
+    try:
+        scaler = GradScaler('cuda', enabled=(device == 'cuda'))
+    except TypeError:
+        scaler = GradScaler(enabled=(device == 'cuda'))
 
     # ── Resume state ─────────────────────────────────────────────────────────
     start_epoch   = 1
@@ -245,7 +251,7 @@ def run_training(config_path: str, resume: bool = False):
     for epoch in range(start_epoch, epochs + 1):
         print(f"\nEpoch {epoch}/{epochs}  |  LR: {scheduler.get_last_lr()[0]:.2e}")
 
-        if epoch == 21 and not phase2_started:
+        if epoch == t_cfg.get('freeze_epochs', 20) + 1 and not phase2_started:
             print("  => Phase 2: unfreezing EfficientNet backbone")
             torch.cuda.empty_cache()
             optimizer = _build_phase2_optimizer(model, t_cfg)

@@ -74,11 +74,16 @@ def infer_single(
     """
     if device is None:
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    if family_names is None:
-        family_names = MALIMG_FAMILIES
 
     with open(config_path) as f:
         cfg = yaml.safe_load(f)
+
+    if family_names is None:
+        img_dir = Path(cfg['data']['img_dir'])
+        if img_dir.exists():
+            family_names = sorted([d.name for d in img_dir.iterdir() if d.is_dir()])
+        else:
+            family_names = MALIMG_FAMILIES
 
     model, tau = load_model_from_checkpoint(checkpoint_path, cfg, device)
     print(f"Model loaded. tau = {tau:.4f}")

@@ -32,8 +32,9 @@ def _is_kaggle_env() -> bool:
     return bool(os.environ.get('KAGGLE_URL_BASE') or os.environ.get('KAGGLE_KERNEL_RUN_TYPE'))
 
 
-def _prepare_runtime_config(config: str, kaggle_mode: bool) -> str:
-    if not kaggle_mode:
+def _prepare_runtime_config(config: str, kaggle_mode: bool, subset_per_class: int = None) -> str:
+    # Always return original config unless we need environment-specific overrides.
+    if not kaggle_mode and not subset_per_class:
         return config
 
     source_path = ROOT / config
@@ -43,6 +44,10 @@ def _prepare_runtime_config(config: str, kaggle_mode: bool) -> str:
     cfg.setdefault('data', {})
     cfg.setdefault('training', {})
     cfg['data']['num_workers'] = 4
+    if subset_per_class:
+        cfg['data']['subsample_per_class'] = int(subset_per_class)
+        # Keep batch size sensible for smaller slices.
+        cfg['training']['batch_size'] = min(int(cfg['training'].get('batch_size', 64)), 64)
 
     runtime_dir = ROOT / 'outputs' / 'kaggle_configs'
     runtime_dir.mkdir(parents=True, exist_ok=True)
@@ -252,10 +257,17 @@ def main():
                         help='Resume training from last saved checkpoint (last.pt)')
     parser.add_argument('--kaggle', action='store_true',
                         help='Use Kaggle/P100 runtime settings (auto-detected on Kaggle)')
+    parser.add_argument('--subset-per-class', type=int, default=None,
+                        help='Run on at most N samples per class in each split')
     args = parser.parse_args()
 
     kaggle_mode = args.kaggle or _is_kaggle_env()
-    runtime_suffix = 'p100' if kaggle_mode else ''
+    runtime_parts = []
+    if args.subset_per_class:
+        runtime_parts.append(f"n{args.subset_per_class}")
+    if kaggle_mode:
+        runtime_parts.append('p100')
+    runtime_suffix = '_'.join(runtime_parts)
 
     start_idx = ALL_STEPS.index(args.from_step)
     steps_to_run = ALL_STEPS[start_idx:]
@@ -270,7 +282,10 @@ def main():
     print('='*56)
 
     def runtime_config(config: str) -> str:
-        return _prepare_runtime_config(config, kaggle_mode)
+        return _prepare_runtime_config(config, kaggle_mode, subset_per_class=args.subset_per_class)
+
+    def result_suffix(config_name: str) -> str:
+        return f"{config_name}_{runtime_suffix}" if runtime_suffix else config_name
 
     step_fns = {
         'install':  step_install,
@@ -282,7 +297,7 @@ def main():
         'verify':   step_verify,
         'tests':    step_tests,
         'train':    lambda: step_train(runtime_config('configs/maxfuse_full.yaml'), resume=args.resume),
-        'evaluate': lambda: step_evaluate(runtime_config('configs/maxfuse_full.yaml'), output_suffix=runtime_suffix or 'maxfuse_full'),
+        'evaluate': lambda: step_evaluate(runtime_config('configs/maxfuse_full.yaml'), output_suffix=result_suffix('maxfuse_full')),
     }
 
     for step in steps_to_run:
@@ -309,7 +324,7 @@ def main():
         for cfg in ALL_CONFIGS:
             config_name = Path(cfg).stem
             step_train(runtime_config(cfg), resume=args.resume)
-            step_evaluate(runtime_config(cfg), output_suffix=(runtime_suffix or config_name))
+            step_evaluate(runtime_config(cfg), output_suffix=result_suffix(config_name))
 
     print()
     print('='*56)
@@ -318,7 +333,7 @@ def main():
         print('  Trained 5 models with unique result files:')
         for cfg in ALL_CONFIGS:
             name = Path(cfg).stem
-            print(f'    • {name}_{{json,confusion.png}}')
+            print(f'    • {result_suffix(name)}_{{json,confusion.png}}')
     else:
         print('  Pipeline complete.')
     print(f'  Results in outputs/results/')
