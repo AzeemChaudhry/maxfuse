@@ -105,7 +105,7 @@ python src/infer.py \
 bash scripts/run_ablation.sh
 ```
 
-Trains and evaluates five configurations: full model, no-N1, no-N2, no-N3, and base. Results saved to `outputs/results/`.
+Trains and evaluates five configurations: full model, no-N1, no-N2, no-N3, and baseline. Results saved to `outputs/results/`.
 
 | Config | N1 | N2 | N3 |
 |--------|----|----|-----|
@@ -113,7 +113,7 @@ Trains and evaluates five configurations: full model, no-N1, no-N2, no-N3, and b
 | `ablation_no_n1.yaml` | Off | On | On |
 | `ablation_no_n2.yaml` | On | Off | On |
 | `ablation_no_n3.yaml` | On | On | Off |
-| `base.yaml` | On | On | On |
+| `baseline.yaml` | Off | Off | Off |
 
 ---
 
@@ -122,7 +122,7 @@ Trains and evaluates five configurations: full model, no-N1, no-N2, no-N3, and b
 ```
 maxfuse/
 ├── configs/                    # YAML experiment configs
-│   ├── base.yaml
+│   ├── baseline.yaml
 │   ├── maxfuse_full.yaml
 │   └── ablation_*.yaml
 ├── scripts/

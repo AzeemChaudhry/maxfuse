@@ -13,6 +13,7 @@ import sys
 import yaml
 import wandb
 import torch
+import torch.nn as nn
 
 # Reduce CUDA memory fragmentation (safe on all PyTorch 2.x builds)
 os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
@@ -26,6 +27,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from models.maxfuse import MAXFUSE
+from models.baseline import BaselineLateFusion
 from losses.energy_margin_loss import EnergyMarginLoss
 from data.dataset import get_dataloaders
 
@@ -40,8 +42,16 @@ def set_seed(seed: int):
         torch.cuda.manual_seed_all(seed)
 
 
-def build_model(cfg: dict) -> MAXFUSE:
+def build_model(cfg: dict):
     m_cfg = cfg['model']
+    arch = m_cfg.get('arch', 'maxfuse').lower()
+
+    if arch == 'baseline':
+        return BaselineLateFusion(
+            num_classes=m_cfg['num_classes'],
+            dropout=m_cfg['dropout'],
+        )
+
     return MAXFUSE(
         num_classes=m_cfg['num_classes'],
         img_dim=m_cfg['img_dim'],
@@ -62,7 +72,7 @@ def make_ood_batch(batch_size: int, device: str) -> tuple:
     return img_ood, feat_ood
 
 
-def train_epoch(model, loader, optimizer, criterion, scaler, device, ood_ratio=0.5) -> dict:
+def train_epoch(model, loader, optimizer, criterion, scaler, device, use_energy_loss: bool, ood_ratio=0.5) -> dict:
     model.train()
     total_loss = correct = total = 0
 
@@ -71,14 +81,18 @@ def train_epoch(model, loader, optimizer, criterion, scaler, device, ood_ratio=0
         num_feats = num_feats.to(device, non_blocking=True)
         labels    = labels.to(device, non_blocking=True)
 
-        ood_size = max(1, int(len(img) * ood_ratio))
-        img_ood, feat_ood = make_ood_batch(ood_size, device)
-
         optimizer.zero_grad(set_to_none=True)
         with autocast(device_type='cuda' if device == 'cuda' else 'cpu'):
-            logits_id  = model(img, num_feats)
-            logits_ood = model(img_ood, feat_ood)
-            loss, loss_dict = criterion(logits_id, labels, logits_ood)
+            logits_id = model(img, num_feats)
+            if use_energy_loss:
+                ood_size = max(1, int(len(img) * ood_ratio))
+                img_ood, feat_ood = make_ood_batch(ood_size, device)
+                logits_ood = model(img_ood, feat_ood)
+                loss, loss_dict = criterion(logits_id, labels, logits_ood)
+                loss_value = loss_dict['loss_total']
+            else:
+                loss = criterion(logits_id, labels)
+                loss_value = loss.item()
 
         scaler.scale(loss).backward()
         scaler.unscale_(optimizer)
@@ -86,7 +100,7 @@ def train_epoch(model, loader, optimizer, criterion, scaler, device, ood_ratio=0
         scaler.step(optimizer)
         scaler.update()
 
-        total_loss += loss_dict['loss_total'] * len(labels)
+        total_loss += loss_value * len(labels)
         correct    += (logits_id.argmax(dim=-1) == labels).sum().item()
         total      += len(labels)
 
@@ -94,7 +108,7 @@ def train_epoch(model, loader, optimizer, criterion, scaler, device, ood_ratio=0
 
 
 @torch.no_grad()
-def validate(model, loader, criterion, device) -> dict:
+def validate(model, loader, criterion, device, use_energy_loss: bool) -> dict:
     model.eval()
     total_loss = correct = total = 0
 
@@ -104,13 +118,18 @@ def validate(model, loader, criterion, device) -> dict:
         labels    = labels.to(device, non_blocking=True)
 
         with autocast(device_type='cuda' if device == 'cuda' else 'cpu'):
-            logits_id  = model(img, num_feats)
-            ood_size   = max(1, len(img) // 4)
-            img_ood, feat_ood = make_ood_batch(ood_size, device)
-            logits_ood = model(img_ood, feat_ood)
-            loss, loss_dict = criterion(logits_id, labels, logits_ood)
+            logits_id = model(img, num_feats)
+            if use_energy_loss:
+                ood_size = max(1, len(img) // 4)
+                img_ood, feat_ood = make_ood_batch(ood_size, device)
+                logits_ood = model(img_ood, feat_ood)
+                loss, loss_dict = criterion(logits_id, labels, logits_ood)
+                loss_value = loss_dict['loss_total']
+            else:
+                loss = criterion(logits_id, labels)
+                loss_value = loss.item()
 
-        total_loss += loss_dict['loss_total'] * len(labels)
+        total_loss += loss_value * len(labels)
         correct    += (logits_id.argmax(dim=-1) == labels).sum().item()
         total      += len(labels)
 
@@ -118,8 +137,9 @@ def validate(model, loader, criterion, device) -> dict:
 
 
 def _build_phase1_optimizer(model, t_cfg):
-    for p in model.image_encoder.backbone.parameters():
-        p.requires_grad = False
+    if hasattr(model, 'image_encoder') and hasattr(model.image_encoder, 'backbone'):
+        for p in model.image_encoder.backbone.parameters():
+            p.requires_grad = False
     return optim.AdamW(
         filter(lambda p: p.requires_grad, model.parameters()),
         lr=t_cfg['lr'], weight_decay=t_cfg['weight_decay']
@@ -127,6 +147,9 @@ def _build_phase1_optimizer(model, t_cfg):
 
 
 def _build_phase2_optimizer(model, t_cfg):
+    if not (hasattr(model, 'image_encoder') and hasattr(model.image_encoder, 'backbone')):
+        return optim.AdamW(model.parameters(), lr=t_cfg['lr'], weight_decay=t_cfg['weight_decay'])
+
     for p in model.image_encoder.backbone.parameters():
         p.requires_grad = True
     return optim.AdamW([
@@ -165,6 +188,8 @@ def run_training(config_path: str, resume: bool = False):
     print(f"Device: {device}")
 
     t_cfg    = cfg['training']
+    arch     = cfg['model'].get('arch', 'maxfuse').lower()
+    use_energy_loss = arch != 'baseline'
     epochs   = t_cfg['epochs']
     save_dir = Path(cfg['logging']['save_dir']) / Path(config_path).stem
     save_dir.mkdir(parents=True, exist_ok=True)
@@ -174,11 +199,14 @@ def run_training(config_path: str, resume: bool = False):
     model     = build_model(cfg).to(device)
     print(f"Parameters: {model.count_parameters():,}")
 
-    criterion = EnergyMarginLoss(
-        m_in=cfg['loss']['m_in'],
-        m_out=cfg['loss']['m_out'],
-        alpha=cfg['loss']['alpha']
-    )
+    if use_energy_loss:
+        criterion = EnergyMarginLoss(
+            m_in=cfg['loss']['m_in'],
+            m_out=cfg['loss']['m_out'],
+            alpha=cfg['loss']['alpha']
+        )
+    else:
+        criterion = nn.CrossEntropyLoss()
     scaler = GradScaler(enabled=(device == 'cuda'))
 
     # ── Resume state ─────────────────────────────────────────────────────────
@@ -189,6 +217,8 @@ def run_training(config_path: str, resume: bool = False):
     if resume and last_ckpt.exists():
         ckpt = torch.load(last_ckpt, map_location=device, weights_only=False)
         model.load_state_dict(ckpt['model_state_dict'])
+        if hasattr(model, 'load_non_torch_state') and 'non_torch_state' in ckpt:
+            model.load_non_torch_state(ckpt['non_torch_state'])
         start_epoch    = ckpt['epoch'] + 1
         best_val_acc   = ckpt.get('best_val_acc', 0.0)
         phase2_started = ckpt.get('phase2_started', False)
@@ -245,7 +275,7 @@ def run_training(config_path: str, resume: bool = False):
     for epoch in range(start_epoch, epochs + 1):
         print(f"\nEpoch {epoch}/{epochs}  |  LR: {scheduler.get_last_lr()[0]:.2e}")
 
-        if epoch == 21 and not phase2_started:
+        if epoch == 21 and not phase2_started and use_energy_loss:
             print("  => Phase 2: unfreezing EfficientNet backbone")
             torch.cuda.empty_cache()
             optimizer = _build_phase2_optimizer(model, t_cfg)
@@ -254,8 +284,8 @@ def run_training(config_path: str, resume: bool = False):
             )
             phase2_started = True
 
-        train_metrics = train_epoch(model, loaders['train'], optimizer, criterion, scaler, device)
-        val_metrics   = validate(model, loaders['val'], criterion, device)
+        train_metrics = train_epoch(model, loaders['train'], optimizer, criterion, scaler, device, use_energy_loss)
+        val_metrics   = validate(model, loaders['val'], criterion, device, use_energy_loss)
         scheduler.step()
 
         log = {**train_metrics, **val_metrics, 'epoch': epoch,
@@ -265,14 +295,17 @@ def run_training(config_path: str, resume: bool = False):
               f"Val Acc: {val_metrics['val_acc']*100:.2f}%")
 
         # Save last.pt every epoch for resume support
-        torch.save({
+        ckpt_last = {
             'epoch':                epoch,
             'model_state_dict':     model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
             'best_val_acc':         best_val_acc,
             'phase2_started':       phase2_started,
             'config':               cfg,
-        }, last_ckpt)
+        }
+        if hasattr(model, 'export_non_torch_state'):
+            ckpt_last['non_torch_state'] = model.export_non_torch_state()
+        torch.save(ckpt_last, last_ckpt)
 
         if val_metrics['val_acc'] > best_val_acc:
             best_val_acc = val_metrics['val_acc']
@@ -283,13 +316,26 @@ def run_training(config_path: str, resume: bool = False):
                 'val_acc':              best_val_acc,
                 'config':               cfg,
             }
+            if hasattr(model, 'export_non_torch_state'):
+                ckpt_data['non_torch_state'] = model.export_non_torch_state()
             torch.save(ckpt_data, save_dir / 'best.pt')
             print(f"  * Best model saved (val_acc={best_val_acc*100:.2f}%)")
+
+    if hasattr(model, 'fit_numeric_rusboost'):
+        print("\nFitting numeric RUSBoost branch for baseline late fusion...")
+        model.fit_numeric_rusboost(loaders['train'])
+        best_path = save_dir / 'best.pt'
+        if best_path.exists():
+            best_ckpt = torch.load(best_path, map_location=device, weights_only=False)
+            best_ckpt['non_torch_state'] = model.export_non_torch_state()
+            torch.save(best_ckpt, best_path)
 
     # ── OOD threshold calibration ─────────────────────────────────────────────
     print("\nCalibrating OOD threshold on validation set...")
     best = torch.load(save_dir / 'best.pt', map_location=device, weights_only=False)
     model.load_state_dict(best['model_state_dict'])
+    if hasattr(model, 'load_non_torch_state') and 'non_torch_state' in best:
+        model.load_non_torch_state(best['non_torch_state'])
     tau = model.calibrate_threshold(loaders['val'], device=device)
     best['tau'] = tau
     torch.save(best, save_dir / 'best.pt')

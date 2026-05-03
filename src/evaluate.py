@@ -21,6 +21,7 @@ from tqdm import tqdm
 sys.path.insert(0, str(Path(__file__).parent))
 
 from models.maxfuse import MAXFUSE
+from models.baseline import BaselineLateFusion
 from models.energy_ood import compute_ood_auroc, compute_fpr95, energy_score, UNKNOWN_LABEL
 from data.dataset import get_dataloaders, MalwareDataset
 from torch.utils.data import DataLoader
@@ -28,20 +29,30 @@ from torch.utils.data import DataLoader
 
 def load_model(checkpoint_path: str, cfg: dict, device: str) -> MAXFUSE:
     m_cfg = cfg['model']
-    model = MAXFUSE(
-        num_classes=m_cfg['num_classes'],
-        img_dim=m_cfg['img_dim'],
-        num_dim=m_cfg['num_dim'],
-        shared_dim=m_cfg['shared_dim'],
-        mc_passes=m_cfg['mc_passes'],
-        dropout=m_cfg['dropout'],
-        use_n1=m_cfg.get('use_n1', True),
-        use_n2=m_cfg.get('use_n2', True),
-        use_n3=m_cfg.get('use_n3', True),
-    ).to(device)
+    arch = m_cfg.get('arch', 'maxfuse').lower()
+
+    if arch == 'baseline':
+        model = BaselineLateFusion(
+            num_classes=m_cfg['num_classes'],
+            dropout=m_cfg['dropout'],
+        ).to(device)
+    else:
+        model = MAXFUSE(
+            num_classes=m_cfg['num_classes'],
+            img_dim=m_cfg['img_dim'],
+            num_dim=m_cfg['num_dim'],
+            shared_dim=m_cfg['shared_dim'],
+            mc_passes=m_cfg['mc_passes'],
+            dropout=m_cfg['dropout'],
+            use_n1=m_cfg.get('use_n1', True),
+            use_n2=m_cfg.get('use_n2', True),
+            use_n3=m_cfg.get('use_n3', True),
+        ).to(device)
 
     ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
     model.load_state_dict(ckpt['model_state_dict'])
+    if hasattr(model, 'load_non_torch_state') and 'non_torch_state' in ckpt:
+        model.load_non_torch_state(ckpt['non_torch_state'])
     if 'tau' in ckpt:
         model.tau.fill_(ckpt['tau'])
     model.eval()
@@ -57,10 +68,7 @@ def evaluate_closed_set(model, loader, device: str, family_names: list = None) -
         img       = img.to(device)
         num_feats = num_feats.to(device)
 
-        v_i, v_n         = model.encode(img, num_feats)
-        v_hat_i, v_hat_n = model.attend(v_i, v_n)
-        z = 0.5 * v_hat_i + 0.5 * v_hat_n
-        logits = model.classifier(z)
+        logits = model(img, num_feats)
 
         probs = torch.softmax(logits, dim=-1).cpu().numpy()
         preds = logits.argmax(dim=-1).cpu().numpy()
@@ -94,10 +102,7 @@ def collect_energies_loader(model, loader, device: str) -> np.ndarray:
     for img, num_feats, _ in tqdm(loader, desc='Collecting energies'):
         img       = img.to(device)
         num_feats = num_feats.to(device)
-        v_i, v_n         = model.encode(img, num_feats)
-        v_hat_i, v_hat_n = model.attend(v_i, v_n)
-        z = 0.5 * v_hat_i + 0.5 * v_hat_n
-        logits = model.classifier(z)
+        logits = model(img, num_feats)
         E = energy_score(logits)
         energies.append(E.cpu().numpy())
     return np.concatenate(energies)
@@ -112,10 +117,7 @@ def collect_energies_noise(model, n_samples: int, batch_size: int, device: str) 
         bsz = min(batch_size, n_samples - collected)
         img_ood  = torch.rand(bsz, 1, 224, 224, device=device)
         feat_ood = torch.rand(bsz, 80,         device=device)
-        v_i, v_n         = model.encode(img_ood, feat_ood)
-        v_hat_i, v_hat_n = model.attend(v_i, v_n)
-        z = 0.5 * v_hat_i + 0.5 * v_hat_n
-        logits = model.classifier(z)
+        logits = model(img_ood, feat_ood)
         E = energy_score(logits)
         energies.append(E.cpu().numpy())
         collected += bsz
@@ -220,7 +222,7 @@ def run_evaluation(config_path: str, checkpoint_path: str, output_suffix: str = 
             tau = model.tau.item()
             plot_energy_histogram(
                 ood_results['energy_id'], ood_results['energy_ood'], tau,
-                save_path=str(out_dir / 'energy_histogram.png')
+                save_path=str(out_dir / (Path(checkpoint_path).parent.name + suffix_str + '_energy_histogram.png'))
             )
         else:
             # Fall back to synthetic uniform-noise OOD (same distribution used during training)
@@ -239,7 +241,7 @@ def run_evaluation(config_path: str, checkpoint_path: str, output_suffix: str = 
             tau = model.tau.item()
             plot_energy_histogram(
                 E_id, E_ood, tau,
-                save_path=str(out_dir / 'energy_histogram_noise.png')
+                save_path=str(out_dir / (Path(checkpoint_path).parent.name + suffix_str + '_energy_histogram_noise.png'))
             )
             ood_results = {'ood_auroc': auroc, 'fpr95': fpr95,
                            'energy_id': E_id, 'energy_ood': E_ood}

@@ -3,7 +3,7 @@ seed: 42
 device: cuda
 
 data:
-  img_dir: data/processed/images/
+  img_dir: malimg_paper_dataset_imgs/
   features_csv: data/processed/features/pe_features_nca.csv
   train_csv: data/splits/train.csv
   train_balanced_csv: data/splits/train_balanced.csv

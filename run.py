@@ -11,6 +11,7 @@ Usage:
     python run.py --from-step train      # start from a specific step
     python run.py --ablation             # also run all ablation configs after main training
     python run.py --skip-tests           # skip pytest
+    python run.py --paper-compare --compare-mode smoke  # one-click baseline vs MAXFUSE
 
 Steps: install | download | features | splits | nca | smote | verify | tests | train | evaluate
 """
@@ -187,7 +188,7 @@ def step_verify():
     _run_inline('verify',
         "import sys, yaml; sys.path.insert(0,'src'); "
         "from data.dataset import get_dataloaders; "
-        "cfg=yaml.safe_load(open('configs/base.yaml')); "
+        "cfg=yaml.safe_load(open('configs/maxfuse_full.yaml')); "
         "loaders=get_dataloaders(cfg); "
         "img,num,lbl=next(iter(loaders['train'])); "
         "print('  img:',img.shape,'  num:',num.shape); "
@@ -220,14 +221,22 @@ def step_evaluate(config: str = 'configs/maxfuse_full.yaml', output_suffix: str 
     _run('evaluate', cmd, TIMEOUTS['evaluate'])
 
 
+def step_paper_compare(mode: str = 'smoke', resume: bool = False):
+    cmd = [sys.executable, 'scripts/paper_compare.py', '--mode', mode]
+    if resume:
+        cmd.append('--resume')
+    timeout = 21600 if mode == 'smoke' else 259200
+    _run('paper_compare', cmd, timeout)
+
+
 # Step ordering
 
 ALL_STEPS = ['install', 'download', 'features', 'splits', 'nca', 'smote',
              'verify', 'tests', 'train', 'evaluate']
 
-# All configs: base, 3 ablations (no-N1, no-N2, no-N3), and full model
+# All configs: baseline, 3 ablations (no-N1, no-N2, no-N3), and full model
 ALL_CONFIGS = [
-    'configs/base.yaml',
+    'configs/baseline.yaml',
     'configs/ablation_no_n1.yaml',
     'configs/ablation_no_n2.yaml',
     'configs/ablation_no_n3.yaml',
@@ -247,11 +256,15 @@ def main():
     parser.add_argument('--skip-tests', action='store_true',
                         help='Skip the pytest step')
     parser.add_argument('--ablation', action='store_true',
-                        help='Train and evaluate all 5 models: base, ablation_no_n1/n2/n3, and maxfuse_full')
+                        help='Train and evaluate all 5 models: baseline, ablation_no_n1/n2/n3, and maxfuse_full')
     parser.add_argument('--resume', action='store_true',
                         help='Resume training from last saved checkpoint (last.pt)')
     parser.add_argument('--kaggle', action='store_true',
                         help='Use Kaggle/P100 runtime settings (auto-detected on Kaggle)')
+    parser.add_argument('--paper-compare', action='store_true',
+                        help='Run one-click baseline vs MAXFUSE comparison with publishable tables/plots')
+    parser.add_argument('--compare-mode', choices=['smoke', 'full'], default='smoke',
+                        help='Comparison mode for --paper-compare (default: smoke)')
     args = parser.parse_args()
 
     kaggle_mode = args.kaggle or _is_kaggle_env()
@@ -268,6 +281,15 @@ def main():
     print(f"  Ablation      : {'yes' if args.ablation else 'no'}")
     print(f"  Kaggle/P100   : {'yes' if kaggle_mode else 'no'}")
     print('='*56)
+
+    if args.paper_compare:
+        print('\n[MODE] One-click paper comparison requested.')
+        step_paper_compare(mode=args.compare_mode, resume=args.resume)
+        print('\n' + '='*56)
+        print('  Paper comparison complete.')
+        print('  See outputs/paper_compare/ for tables, graphs, and copied artifacts.')
+        print('='*56)
+        return
 
     def runtime_config(config: str) -> str:
         return _prepare_runtime_config(config, kaggle_mode)
@@ -300,7 +322,7 @@ def main():
     if args.ablation:
         print('\n' + '='*56)
         print('  COMPREHENSIVE ABLATION STUDY — All 5 Models')
-        print('  • base.yaml')
+        print('  • baseline.yaml')
         print('  • ablation_no_n1.yaml   (N1 disabled)')
         print('  • ablation_no_n2.yaml   (N2 disabled)')
         print('  • ablation_no_n3.yaml   (N3 disabled)')
